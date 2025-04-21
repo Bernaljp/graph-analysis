@@ -10,7 +10,8 @@ from IPython.display import display
 import math
 import torch
 import numpy as np
-from tqdm import tqdm
+from tqdm import 
+from typing import Callable, list, tuple, dict
 from sklearn.decomposition import PCA
 import umap
 import torchode as to
@@ -19,6 +20,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Config:
+    """Configuration class for storing simulation and visualization parameters."""
     K_LOOP = 0.2
     K_EDGE = 0.3
     N_HILL = 3
@@ -32,18 +34,52 @@ class Config:
     EDGE_WIDTH = 2
     COLORS = {'positive': 'RoyalBlue', 'negative': 'Crimson', 'default': 'steelblue', 'selected': 'crimson'}
 
-def get_device(preferred_device='cuda'):
-    """Return the appropriate device based on availability."""
+def get_device(preferred_device: str = 'cuda') -> str:
+    """Returns the appropriate device based on availability.
+
+    Args:
+        preferred_device: The preferred device, defaults to 'cuda'.
+
+    Returns:
+        The available device ('cuda' if available, else 'cpu').
+    """
     return preferred_device if torch.cuda.is_available() else 'cpu'
 
 class WeightedDigraph:
-    def __init__(self, adjacency_matrix):
+    """A class representing a weighted directed graph with specific constraints.
+
+    Attributes:
+        n: Number of nodes in the graph.
+        matrix: Adjacency matrix as a numpy array.
+
+    Args:
+        adjacency_matrix: A square matrix where entry [i][j] is 0 (no edge), +1, or -1
+            for i != j, and 0 or +1 for i == j (self-loops).
+    """
+    def __init__(self, adjacency_matrix: list[list[int]] | np.ndarray) -> None:
+        """Initializes a weighted digraph with the given adjacency matrix.
+
+        Args:
+            adjacency_matrix: A square matrix where entry [i][j] is 0 (no edge), +1, or -1
+                for i != j, and 0 or +1 for i == j (self-loops).
+
+        Raises:
+            ValueError: If the adjacency matrix is invalid.
+        """
         if not self._is_valid_matrix(adjacency_matrix):
             raise ValueError("Invalid adjacency matrix")
         self.n = len(adjacency_matrix)
         self.matrix = np.array(adjacency_matrix, dtype=int)
 
-    def _is_valid_matrix(self, matrix):
+    def _is_valid_matrix(self, matrix: list[list[int]] | np.ndarray) -> bool:
+        """Validates the adjacency matrix according to graph constraints.
+
+        Args:
+            matrix: The adjacency matrix to validate.
+
+        Returns:
+            True if the matrix is valid, False otherwise.
+        """
         matrix = np.array(matrix)
         n = matrix.shape[0]
         if n == 0 or matrix.shape[1] != n:
@@ -77,13 +113,31 @@ class WeightedDigraph:
                         stack.append(v)
         return len(visited) == n
 
-    def get_matrix(self):
+    def get_matrix(self) -> np.ndarray:
+        """Returns the adjacency matrix of the digraph.
+
+        Returns:
+            A numpy array representing the adjacency matrix.
+        """
         return self.matrix
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Returns a string representation of the digraph's adjacency matrix.
+
+        Returns:
+            A string with each row of the matrix on a new line.
+        """
         return "\n".join(str(row) for row in self.matrix)
 
-def compute_node_invariants(digraph):
+def compute_node_invariants(digraph: WeightedDigraph) -> list[tuple[int, int, int, int, int]]:
+    """Computes invariants for each node in the digraph.
+
+    Args:
+        digraph: The weighted digraph to analyze.
+
+    Returns:
+        A list of tuples, each containing (loop, out_+1, out_-1, in_+1, in_-1) for a node.
+    """
     matrix = digraph.get_matrix()
     n = digraph.n
     invariants = []
@@ -96,7 +150,16 @@ def compute_node_invariants(digraph):
         invariants.append((loop, out_plus1, out_minus1, in_plus1, in_minus1))
     return invariants
 
-def get_candidate_permutations(invariants, n):
+def get_candidate_permutations(invariants: list[tuple[int, int, int, int, int]], n: int) -> list[tuple[int, ...]]:
+    """Generates candidate permutations based on node invariants.
+
+    Args:
+        invariants: List of node invariants.
+        n: Number of nodes in the graph.
+
+    Returns:
+        A list of permutations, each a tuple of node indices.
+    """
     invariant_to_nodes = defaultdict(list)
     for idx, inv in enumerate(invariants):
         invariant_to_nodes[inv].append(idx)
@@ -113,7 +176,15 @@ def get_candidate_permutations(invariants, n):
         candidate_perms = list(itertools.permutations(range(n)))
     return candidate_perms
 
-def get_canonical_form(digraph):
+def get_canonical_form(digraph: WeightedDigraph) -> tuple[int, ...]:
+    """Computes the canonical form of the digraph.
+
+    Args:
+        digraph: The weighted digraph to canonicalize.
+
+    Returns:
+        A tuple of matrix entries under the lexicographically minimal permutation.
+    """
     matrix = digraph.get_matrix()
     n = digraph.n
     invariants = compute_node_invariants(digraph)
@@ -135,10 +206,26 @@ def get_canonical_form(digraph):
                 canonical_form = flat_matrix
     return canonical_form
 
-def identify_equivalence_class(digraph):
+def identify_equivalence_class(digraph: WeightedDigraph) -> tuple[int, ...]:
+    """Identifies the equivalence class of the digraph.
+
+    Args:
+        digraph: The weighted digraph to classify.
+
+    Returns:
+        A tuple representing the canonical form of the digraph's isomorphism class.
+    """
     return get_canonical_form(digraph)
 
-def precompute_classes(n):
+def precompute_classes(n: int) -> list[np.ndarray]:
+    """Precomputes unique graph representatives for graphs with n nodes.
+
+    Args:
+        n: Number of nodes in the graphs.
+
+    Returns:
+        A list of numpy arrays, each an adjacency matrix of a unique graph.
+    """
     edge_positions = [(i, j) for i in range(n) for j in range(n) if i != j]
     num_edges = len(edge_positions)
     loops = np.array(list(itertools.product([0, 1], repeat=n)))
@@ -169,7 +256,29 @@ def precompute_classes(n):
     return list(reps.values())
 
 class BatchedMotif(torch.nn.Module):
-    def __init__(self, adj_matrices, device='cuda'):
+    """A PyTorch module for simulating dynamics on multiple graphs.
+
+    Attributes:
+        adj: Tensor of adjacency matrices.
+        n: Number of nodes per graph.
+        num_graphs: Number of graphs in the batch.
+        loop_mask: Mask for self-loops.
+        k_loop: Hill coefficient for self-loops.
+        k_edge: Hill coefficient for edges.
+        n_hill: Hill exponent.
+        non_zero_mask: Mask for non-zero edges.
+
+    Args:
+        adj_matrices: Array of adjacency matrices.
+        device: Device to run computations on ('cuda' or 'cpu').
+    """
+    def __init__(self, adj_matrices: np.ndarray, device: str = 'cuda') -> None:
+        """Initializes the BatchedMotif module.
+
+        Args:
+            adj_matrices: Array of adjacency matrices with shape (num_graphs, n, n).
+            device: Device to run computations on ('cuda' or 'cpu').
+        """
         super().__init__()
         self.device = get_device(device)
         self.adj = torch.tensor(adj_matrices, dtype=torch.float32).to(device=self.device)
@@ -181,7 +290,16 @@ class BatchedMotif(torch.nn.Module):
         self.n_hill = Config.N_HILL
         self.non_zero_mask = (self.adj != 0).unsqueeze(0).to(device=self.device)
 
-    def forward(self, t, y):
+    def forward(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Computes the derivative for the ODE system.
+
+        Args:
+            t: Time point (scalar).
+            y: State tensor with shape (batch_size, num_graphs * n).
+
+        Returns:
+            Derivative tensor with shape (batch_size, num_graphs * n).
+        """
         batch_size = y.shape[0]
         y = y.view(-1, self.num_graphs, self.n)
         u = y.unsqueeze(2).expand(-1, -1, self.n, -1)
@@ -200,10 +318,16 @@ class BatchedMotif(torch.nn.Module):
         dx = prod - y
         return dx.view(batch_size, self.n)
 
-def solve_ivp_torchode(f, t_span, y0, t_eval=None, atol=1e-6, rtol=1e-3):
-    """
-    Solve an initial value problem (IVP) for ODEs using torchode.
-    
+def solve_ivp_torchode(
+    f: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    t_span: tuple[float, float],
+    y0: torch.Tensor,
+    t_eval: torch.Tensor | None = None,
+    atol: float = 1e-6,
+    rtol: float = 1e-3
+) -> torch.Tensor:
+    """Solves an initial value problem (IVP) for ODEs using torchode.
+
     Args:
         f: ODE function with signature f(t, y) -> dy/dt.
         t_span: Tuple (t_start, t_end) for integration.
@@ -211,11 +335,10 @@ def solve_ivp_torchode(f, t_span, y0, t_eval=None, atol=1e-6, rtol=1e-3):
         t_eval: Time points for evaluation (optional).
         atol: Absolute tolerance for solver.
         rtol: Relative tolerance for solver.
-    
+
     Returns:
         Solution tensor with shape depending on y0.
     """
-    # Handle different input dimensions
     is_3d = y0.dim() == 3
     is_1d = y0.dim() == 1
     if is_3d:
@@ -225,26 +348,18 @@ def solve_ivp_torchode(f, t_span, y0, t_eval=None, atol=1e-6, rtol=1e-3):
         y0 = y0.unsqueeze(0)
     else:
         y0 = y0.unsqueeze(1)
-    
-    # Set default evaluation points
     if t_eval is None:
         t_eval = torch.linspace(t_span[0], t_span[1], Config.NUM_STEPS, device=y0.device)
     if t_eval.dim() == 1:
         t_eval = t_eval.unsqueeze(0).repeat(y0.shape[0], 1)
-    
-    # Initialize solver
     term = to.ODETerm(f)
     step = to.Dopri5(term=term)
     ctrl = to.IntegralController(atol=atol, rtol=rtol, term=term)
     solver = to.AutoDiffAdjoint(step, ctrl)
-    
-    # Set up IVP
     batch_size = y0.shape[0]
     t_start = torch.tensor([t_span[0]], dtype=torch.float32, device=y0.device).expand(batch_size)
     t_end = torch.tensor([t_span[1]], dtype=torch.float32, device=y0.device).expand(batch_size)
     ivp = to.InitialValueProblem(y0=y0, t_start=t_start, t_end=t_end, t_eval=t_eval)
-    
-    # Solve and reshape output
     sol = solver.solve(ivp)
     if is_3d:
         sol.ys = sol.ys.view(num_inits, num_graphs, sol.ys.shape[1], n)
@@ -254,7 +369,23 @@ def solve_ivp_torchode(f, t_span, y0, t_eval=None, atol=1e-6, rtol=1e-3):
         sol.ys = sol.ys.unsqueeze(1)
     return sol.ys
 
-def graph_features(adj_matrices, num_inits=10, batch_size=100, device='cuda'):
+def graph_features(
+    adj_matrices: np.ndarray,
+    num_inits: int = 10,
+    batch_size: int = 100,
+    device: str = 'cuda'
+) -> np.ndarray:
+    """Computes features for a batch of graphs by simulating dynamics.
+
+    Args:
+        adj_matrices: Array of adjacency matrices with shape (num_graphs, n, n).
+        num_inits: Number of initial conditions per graph.
+        batch_size: Number of graphs to process per batch.
+        device: Device to run computations on ('cuda' or 'cpu').
+
+    Returns:
+        Array of features (mean and std of final states) with shape (num_graphs, 2*n).
+    """
     device = get_device(device)
     n = adj_matrices.shape[-1]
     num_graphs = len(adj_matrices)
@@ -274,7 +405,20 @@ def graph_features(adj_matrices, num_inits=10, batch_size=100, device='cuda'):
             pbar.update(1)
     return np.concatenate(features, axis=0)
 
-def analyze_all_graphs(n, num_inits=10):
+def analyze_all_graphs(n: int, num_inits: int = 10) -> tuple[list[np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
+    """Analyzes all unique graphs with n nodes and computes embeddings.
+
+    Args:
+        n: Number of nodes in the graphs.
+        num_inits: Number of initial conditions for simulations.
+
+    Returns:
+        A tuple containing:
+        - List of unique graph adjacency matrices.
+        - Feature array (mean and std of final states).
+        - PCA embedding (2D).
+        - UMAP embedding (2D).
+    """
     graphs = precompute_classes(n)
     print(f"Number of unique graphs for n={n}: {len(graphs)}")
     adj_matrices = np.array(graphs)
@@ -285,7 +429,24 @@ def analyze_all_graphs(n, num_inits=10):
     u2 = um.fit_transform(feats)
     return graphs, feats, p2, u2
 
-def run_simulation(adj, y0, ts, device='cuda'):
+def run_simulation(
+    adj: np.ndarray | None,
+    y0: torch.Tensor,
+    ts: torch.Tensor,
+    device: str = 'cuda'
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """Runs a simulation for a single graph.
+
+    Args:
+        adj: Adjacency matrix of the graph, or None.
+        y0: Initial condition tensor with shape (n,).
+        ts: Time points for evaluation.
+        device: Device to run computations on ('cuda' or 'cpu').
+
+    Returns:
+        A tuple of (time points, solution array) if adj is not None,
+        otherwise (None, None).
+    """
     device = get_device(device)
     if adj is None:
         return None, None
@@ -295,7 +456,17 @@ def run_simulation(adj, y0, ts, device='cuda'):
     ys = solve_ivp_torchode(BatchedMotif(adj, device=device), Config.T_SPAN, y0, t_eval=t_eval)
     return t_eval.cpu().numpy(), ys.squeeze(0).squeeze(0).cpu().numpy()
 
-def draw_graph_edges(G, n, pos):
+def draw_graph_edges(G: nx.DiGraph, n: int, pos: dict[int, tuple[float, float]]) -> list[dict]:
+    """Generates Plotly shapes for drawing graph edges.
+
+    Args:
+        G: NetworkX directed graph with weighted edges.
+        n: Number of nodes in the graph.
+        pos: Dictionary mapping node indices to (x, y) positions.
+
+    Returns:
+        A list of Plotly shape dictionaries for edges and arrowheads.
+    """
     shapes = []
     for u, v, data in G.edges(data=True):
         w = data['weight']
@@ -354,7 +525,28 @@ def draw_graph_edges(G, n, pos):
             ))
     return shapes
 
-def visualize_graphs(graphs, pca2, max_points=Config.MAX_POINTS, device='cuda'):
+def visualize_graphs(
+    graphs: list[np.ndarray],
+    pca2: np.ndarray,
+    max_points: int = 1500,
+    device: str = 'cuda'
+) -> tuple[go.FigureWidget, widgets.VBox, widgets.Button, widgets.Button, list[widgets.FloatText]]:
+    """Creates an interactive visualization of graphs and their embeddings.
+
+    Args:
+        graphs: List of graph adjacency matrices.
+        pca2: 2D PCA embedding of graph features.
+        max_points: Maximum number of points to display in the PCA plot.
+        device: Device to run computations on ('cuda' or 'cpu').
+
+    Returns:
+        A tuple containing:
+        - Plotly FigureWidget for the visualization.
+        - VBox widget for the UI controls.
+        - Button widget for running simulations.
+        - Button widget for randomizing initial conditions.
+        - List of FloatText widgets for initial conditions.
+    """
     try:
         device = get_device(device)
         n = len(graphs[0])

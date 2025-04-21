@@ -1,4 +1,9 @@
-Graph Analysis and Visualization
+# Graph Analysis and Visualization
+
+![Python CI](https://github.com/Bernaljp/graph-analysis/workflows/Python%20CI/badge.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue)
+
  This project analyzes weighted directed graphs, computes their equivalence classes, simulates dynamics using ODEs, and visualizes results interactively with PCA/UMAP embeddings.
 
  ## Features
@@ -42,7 +47,3 @@ To run the unit tests locally:
 ```bash
 python -m unittest discover tests
 ```
-
-![Python CI](https://github.com/your-username/graph-analysis/workflows/Python%20CI/badge.svg)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-![Python 3.11](https://img.shields.io/badge/python-3.11-blue)
