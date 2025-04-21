@@ -10,8 +10,8 @@ from IPython.display import display
 import math
 import torch
 import numpy as np
-from tqdm import 
-from typing import Callable, list, tuple, dict
+from tqdm import tqdm
+from typing import Callable, List, Tuple, Dict
 from sklearn.decomposition import PCA
 import umap
 import torchode as to
@@ -84,6 +84,8 @@ class WeightedDigraph:
         n = matrix.shape[0]
         if n == 0 or matrix.shape[1] != n:
             return False
+
+        # 2) Check edge weights and self-loop constraint
         for i in range(n):
             for j in range(n):
                 if i == j:
@@ -92,16 +94,23 @@ class WeightedDigraph:
                 else:
                     if matrix[i, j] not in (0, 1, -1):
                         return False
+
+        # 3) Check degree constraint: each node needs at least one incoming or outgoing edge
         for i in range(n):
             has_edge = np.any(matrix[i, :] != 0) or np.any(matrix[:, i] != 0)
             if not has_edge:
                 return False
+
+        # 4) Check connectivity of the underlying undirected graph
+        #    (ignore loops, treat any non-zero directed arc as an undirected edge)
         adj = {i: set() for i in range(n)}
         for i in range(n):
             for j in range(n):
                 if i != j and (matrix[i, j] != 0 or matrix[j, i] != 0):
                     adj[i].add(j)
                     adj[j].add(i)
+
+        # BFS from node 0
         visited = set()
         stack = [0]
         while stack:
