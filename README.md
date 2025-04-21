@@ -29,11 +29,19 @@ Graph Analysis and Visualization
  from graph_analysis import analyze_all_graphs, visualize_graphs
  graphs, feats, pca2, umap2 = analyze_all_graphs(n=4, num_inits=20)
  fw, ui, run_btn, rand_btn, init_boxes = visualize_graphs(graphs, pca2)
+```
 
-Dependencies
+## Dependencies
 See requirements.txt for a full list.
-License
+
+## License
 MIT License. See LICENSE for details.
+
+## Running Tests
+To run the unit tests locally:
+```bash
+python -m unittest discover tests
+```
 
 ![Python CI](https://github.com/your-username/graph-analysis/workflows/Python%20CI/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
