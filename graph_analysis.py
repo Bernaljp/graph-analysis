@@ -55,18 +55,22 @@ class WeightedDigraph:
     Args:
         adjacency_matrix: A square matrix where entry [i][j] is 0 (no edge), +1, or -1
             for i != j, and 0 or +1 for i == j (self-loops).
+        verify: If True, validates the adjacency matrix; if False, skips validation
+            (use for pre-verified matrices, e.g., from precompute_classes).
     """
-    def __init__(self, adjacency_matrix: list[list[int]] | np.ndarray) -> None:
+    def __init__(self, adjacency_matrix: list[list[int]] | np.ndarray, verify: bool = True) -> None:
         """Initializes a weighted digraph with the given adjacency matrix.
 
         Args:
             adjacency_matrix: A square matrix where entry [i][j] is 0 (no edge), +1, or -1
                 for i != j, and 0 or +1 for i == j (self-loops).
+            verify: If True, validates the adjacency matrix; if False, skips validation
+                (use for pre-verified matrices, e.g., from precompute_classes).
 
         Raises:
-            ValueError: If the adjacency matrix is invalid.
+            ValueError: If verify is True and the adjacency matrix is invalid.
         """
-        if not self._is_valid_matrix(adjacency_matrix):
+        if verify and not self._is_valid_matrix(adjacency_matrix):
             raise ValueError("Invalid adjacency matrix")
         self.n = len(adjacency_matrix)
         self.matrix = np.array(adjacency_matrix, dtype=int)
@@ -235,7 +239,17 @@ def identify_equivalence_class(digraph):
     """
     return get_canonical_form(digraph)
 
-def precompute_classes(n):
+def precompute_classes(n: int) -> list[np.ndarray]:
+    """Precomputes unique graph representatives for graphs with n nodes.
+
+    Args:
+        n: Number of nodes in the graphs.
+
+    Returns:
+        A list of numpy arrays, each an adjacency matrix of a unique graph.
+        Matrices are guaranteed to satisfy WeightedDigraph constraints and are not
+        verified during construction.
+    """
     edge_positions = [(i, j) for i in range(n) for j in range(n) if i != j]
     num_edges = len(edge_positions)
     loops = np.array(list(itertools.product([0, 1], repeat=n)))
@@ -252,7 +266,7 @@ def precompute_classes(n):
     reps = {}
     for M in tqdm(matrices, total=total_matrices, desc=f"Processing matrices (n={n})"):
         try:
-            G = WeightedDigraph(M)
+            G = WeightedDigraph(M, verify=False)
             canon = get_canonical_form(G)
             if canon not in reps:
                 reps[canon] = M
@@ -378,7 +392,9 @@ def graph_features(
     adj_matrices: np.ndarray,
     num_inits: int = 10,
     batch_size: int = 100,
-    device: str = 'cuda'
+    device: str = 'cuda',
+    include_mean_std: bool = True,
+    custom_features: list[Callable[[torch.Tensor], np.ndarray]] | None = None
 ) -> np.ndarray:
     """Computes features for a batch of graphs by simulating dynamics.
 
@@ -387,47 +403,80 @@ def graph_features(
         num_inits: Number of initial conditions per graph.
         batch_size: Number of graphs to process per batch.
         device: Device to run computations on ('cuda' or 'cpu').
+        include_mean_std: Whether to include mean and std in the output.
+        custom_features: List of callable functions, each taking simulation output
+            (shape: (num_inits, num_graphs, num_steps, n)) and returning features
+            (shape: (num_graphs, k)). Features are appended to the default mean and std.
 
     Returns:
-        Array of features (mean and std of final states) with shape (num_graphs, 2*n).
+        Array of features with shape (num_graphs, 2*n + sum(k_i)), where 2*n is from
+        mean and std of final states, and k_i is the feature size from each custom function.
+
+    Raises:
+        ValueError: If a custom feature function returns an incorrectly shaped array.
     """
     device = get_device(device)
     n = adj_matrices.shape[-1]
     num_graphs = len(adj_matrices)
+    custom_features = custom_features or []
     features = []
     num_batches = (num_graphs + batch_size - 1) // batch_size
+    include_mean_std = custom_features is None or include_mean_std
     with tqdm(total=num_batches, desc="Simulating dynamics for all graphs") as pbar:
         for i in range(0, num_graphs, batch_size):
             batch_adj = adj_matrices[i:i + batch_size]
+            batch_size_actual = len(batch_adj)
             model = BatchedMotif(batch_adj, device=device)
-            y0 = torch.rand(num_inits, len(batch_adj), n).to(device=device)
+            y0 = torch.rand(num_inits, batch_size_actual, n).to(device=device)
             ys = solve_ivp_torchode(model, Config.T_SPAN, y0)
             final = ys[:, :, -1, :]
-            mean_final = final.mean(dim=0)
-            std_final = final.std(dim=0)
-            batch_features = torch.cat([mean_final, std_final], dim=1).cpu().numpy()
+            batch_features = []
+
+            if include_mean_std:
+                mean_final = final.mean(dim=0)
+                std_final = final.std(dim=0)
+                batch_features = [mean_final, std_final]
+
+            for cf in custom_features:
+                try:
+                    cf_result = cf(ys)
+                    if not isinstance(cf_result, np.ndarray) or cf_result.shape[0] != batch_size_actual:
+                        raise ValueError(f"Custom feature function {cf.__name__} returned invalid shape: {cf_result.shape}")
+                    batch_features.append(cf_result)
+                except Exception as e:
+                    logging.error(f"Error computing custom feature {cf.__name__}: {e}")
+                    raise
+            batch_features = torch.cat([torch.tensor(f, device='cpu') if isinstance(f, np.ndarray) else f for f in batch_features], dim=1).cpu().numpy()
             features.append(batch_features)
             pbar.update(1)
     return np.concatenate(features, axis=0)
 
-def analyze_all_graphs(n: int, num_inits: int = 10) -> tuple[list[np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
+def analyze_all_graphs(
+    n: int,
+    num_inits: int = 10,
+    custom_features: list[Callable[[torch.Tensor], np.ndarray]] | None = None
+) -> tuple[list[np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
     """Analyzes all unique graphs with n nodes and computes embeddings.
 
     Args:
         n: Number of nodes in the graphs.
         num_inits: Number of initial conditions for simulations.
+        custom_features: List of callable functions, each taking simulation output
+            (shape: (num_inits, num_graphs, num_steps, n)) and returning features
+            (shape: (num_graphs, k)). Features are appended to the default mean and std.
 
     Returns:
         A tuple containing:
         - List of unique graph adjacency matrices.
-        - Feature array (mean and std of final states).
+        - Feature array with shape (num_graphs, 2*n + sum(k_i)), where 2*n is from
+          mean and std, and k_i is from custom features.
         - PCA embedding (2D).
         - UMAP embedding (2D).
     """
     graphs = precompute_classes(n)
     print(f"Number of unique graphs for n={n}: {len(graphs)}")
     adj_matrices = np.array(graphs)
-    feats = graph_features(adj_matrices, num_inits)
+    feats = graph_features(adj_matrices, num_inits, custom_features=custom_features)
     pca = PCA(n_components=2)
     p2 = pca.fit_transform(feats)
     um = umap.UMAP(n_components=2)
