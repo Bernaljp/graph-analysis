@@ -129,103 +129,104 @@ class WeightedDigraph:
         """
         return "\n".join(str(row) for row in self.matrix)
 
-def compute_node_invariants(digraph: WeightedDigraph) -> list[tuple[int, int, int, int, int]]:
-    """Computes invariants for each node in the digraph.
-
-    Args:
-        digraph: The weighted digraph to analyze.
-
-    Returns:
-        A list of tuples, each containing (loop, out_+1, out_-1, in_+1, in_-1) for a node.
+def compute_node_invariants(digraph):
+    """
+    Compute invariants for each node: (loop, out_+1, out_-1, in_+1, in_-1).
+    Returns a list of tuples, one per node.
     """
     matrix = digraph.get_matrix()
     n = digraph.n
     invariants = []
     for i in range(n):
-        loop = matrix[i, i]
-        out_plus1 = np.sum(matrix[i, :n] == 1) - (matrix[i, i] if i < n else 0)
-        out_minus1 = np.sum(matrix[i, :] == -1)
-        in_plus1 = np.sum(matrix[:n, i] == 1) - (matrix[i, i] if i < n else 0)
-        in_minus1 = np.sum(matrix[:n, i] == -1)
+        loop = matrix[i][i]
+        out_plus1 = sum(1 for j in range(n) if matrix[i][j] == 1 and i != j)
+        out_minus1 = sum(1 for j in range(n) if matrix[i][j] == -1)
+        in_plus1 = sum(1 for j in range(n) if matrix[j][i] == 1 and j != i)
+        in_minus1 = sum(1 for j in range(n) if matrix[j][i] == -1)
         invariants.append((loop, out_plus1, out_minus1, in_plus1, in_minus1))
     return invariants
 
-def get_candidate_permutations(invariants: list[tuple[int, int, int, int, int]], n: int) -> list[tuple[int, ...]]:
-    """Generates candidate permutations based on node invariants.
-
-    Args:
-        invariants: List of node invariants.
-        n: Number of nodes in the graph.
-
-    Returns:
-        A list of permutations, each a tuple of node indices.
+def get_candidate_permutations(invariants, n):
     """
+    Generate candidate permutations based on node invariants.
+    Groups nodes by identical invariants and permutes within groups.
+    Returns a list of permutations to check.
+    """
+    # Group nodes by invariants
     invariant_to_nodes = defaultdict(list)
     for idx, inv in enumerate(invariants):
         invariant_to_nodes[inv].append(idx)
+    
+    # Sort invariants to prioritize "heavier" nodes (lexicographically larger)
     sorted_invariants = sorted(invariant_to_nodes.keys(), reverse=True)
-    group_perms = [list(itertools.permutations(invariant_to_nodes[inv])) for inv in sorted_invariants]
+    
+    # Generate permutations of nodes within each invariant group
+    group_perms = []
+    for inv in sorted_invariants:
+        nodes = invariant_to_nodes[inv]
+        group_perms.append(list(itertools.permutations(nodes)))
+    
+    # Combine permutations across groups
     candidate_perms = []
     for group_perm_combo in itertools.product(*group_perms):
+        # Flatten the permutation
         perm = []
         for group_perm in group_perm_combo:
             perm.extend(group_perm)
+        # Ensure full permutation
         if len(perm) == n:
             candidate_perms.append(perm)
+    
+    # Fallback to all permutations if none generated (e.g., n=1 or identical invariants)
     if not candidate_perms:
         candidate_perms = list(itertools.permutations(range(n)))
+    
     return candidate_perms
 
-def get_canonical_form(digraph: WeightedDigraph) -> tuple[int, ...]:
-    """Computes the canonical form of the digraph.
-
-    Args:
-        digraph: The weighted digraph to canonicalize.
-
-    Returns:
-        A tuple of matrix entries under the lexicographically minimal permutation.
+def get_canonical_form(digraph):
+    """
+    Compute a canonical form using node invariants to reduce permutations.
+    Returns a tuple of the matrix entries under the lexicographically minimal permutation.
     """
     matrix = digraph.get_matrix()
     n = digraph.n
+    # Compute node invariants
     invariants = compute_node_invariants(digraph)
+    
+    # Get candidate permutations
     permutations = get_candidate_permutations(invariants, n)
+    
     canonical_form = None
     for perm in permutations:
-        permuted_matrix = np.zeros((n, n), dtype=int)
+        # Create permuted matrix
+        permuted_matrix = [[0] * n for _ in range(n)]
         for i in range(n):
             for j in range(n):
-                permuted_matrix[i, j] = matrix[perm[i], perm[j]]
+                permuted_matrix[i][j] = matrix[perm[i]][perm[j]]
+            # Early pruning: Check if current row makes matrix non-minimal
             if canonical_form is not None:
                 current_row = tuple(permuted_matrix[i])
                 min_row = canonical_form[i*n:(i+1)*n]
                 if current_row > min_row:
                     break
-        else:
-            flat_matrix = tuple(permuted_matrix.flatten())
+        else:  # Only if loop completes without breaking
+            # Flatten matrix to a tuple
+            flat_matrix = tuple(permuted_matrix[i][j] for i in range(n) for j in range(n))
+            # Update canonical form if first or lexicographically smaller
             if canonical_form is None or flat_matrix < canonical_form:
                 canonical_form = flat_matrix
+    
     return canonical_form
 
-def identify_equivalence_class(digraph: WeightedDigraph) -> tuple[int, ...]:
-    """Identifies the equivalence class of the digraph.
-
-    Args:
-        digraph: The weighted digraph to classify.
-
-    Returns:
-        A tuple representing the canonical form of the digraph's isomorphism class.
+def identify_equivalence_class(digraph):
+    """
+    Identify the equivalence class of the digraph.
+    Returns a canonical form (tuple) representing the isomorphism class.
+    Note: Does not assign a number without a precomputed mapping.
     """
     return get_canonical_form(digraph)
 
-def precompute_classes(n: int) -> list[np.ndarray]:
-    """Precomputes unique graph representatives for graphs with n nodes.
-
-    Args:
-        n: Number of nodes in the graphs.
-
-    Returns:
-        A list of numpy arrays, each an adjacency matrix of a unique graph.
-    """
+def precompute_classes(n):
     edge_positions = [(i, j) for i in range(n) for j in range(n) if i != j]
     num_edges = len(edge_positions)
     loops = np.array(list(itertools.product([0, 1], repeat=n)))
@@ -246,13 +247,8 @@ def precompute_classes(n: int) -> list[np.ndarray]:
             canon = get_canonical_form(G)
             if canon not in reps:
                 reps[canon] = M
-        except ValueError as e:
-            logging.debug(f"Skipping invalid matrix: {e}")
+        except ValueError:
             continue
-        except Exception as e:
-            logging.error(f"Unexpected error processing matrix: {e}")
-            continue
-    logging.info(f"Found {len(reps)} unique graphs for n={n}")
     return list(reps.values())
 
 class BatchedMotif(torch.nn.Module):
