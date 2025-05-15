@@ -164,32 +164,25 @@ def get_candidate_permutations(invariants, n):
     Groups nodes by identical invariants and permutes within groups.
     Returns a list of permutations to check.
     """
-    # Group nodes by invariants
     invariant_to_nodes = defaultdict(list)
     for idx, inv in enumerate(invariants):
         invariant_to_nodes[inv].append(idx)
     
-    # Sort invariants to prioritize "heavier" nodes (lexicographically larger)
     sorted_invariants = sorted(invariant_to_nodes.keys(), reverse=True)
     
-    # Generate permutations of nodes within each invariant group
     group_perms = []
     for inv in sorted_invariants:
         nodes = invariant_to_nodes[inv]
         group_perms.append(list(itertools.permutations(nodes)))
     
-    # Combine permutations across groups
     candidate_perms = []
     for group_perm_combo in itertools.product(*group_perms):
-        # Flatten the permutation
         perm = []
         for group_perm in group_perm_combo:
             perm.extend(group_perm)
-        # Ensure full permutation
         if len(perm) == n:
             candidate_perms.append(perm)
     
-    # Fallback to all permutations if none generated (e.g., n=1 or identical invariants)
     if not candidate_perms:
         candidate_perms = list(itertools.permutations(range(n)))
     
@@ -256,14 +249,12 @@ def precompute_classes(n: int) -> list[np.ndarray]:
             True if the underlying undirected graph is connected, False otherwise.
         """
         n = matrix.shape[0]
-        # Fast check: A + A^T - 2I should have no zero rows
         M = abs(matrix) + abs(matrix.T) - 2 * np.eye(n, dtype=int)
         row_sums = np.sum(np.abs(M), axis=1)
         if np.any(row_sums == 0):
             logging.debug("Matrix skipped: node has no off-diagonal edges")
             return False
 
-        # BFS to confirm full connectivity
         adj = {i: set() for i in range(n)}
         for i in range(n):
             for j in range(n):
@@ -324,20 +315,29 @@ class BatchedMotif(torch.nn.Module):
         k_edge: Hill coefficient for edges.
         n_hill: Hill exponent.
         non_zero_mask: Mask for non-zero edges.
+        model_type: Type of model ('multiplicative' or 'additive').
 
     Args:
         adj_matrices: Array of adjacency matrices.
         device: Device to run computations on ('cuda' or 'cpu').
+        model_type: Model type for ODE computation ('multiplicative' or 'additive').
     """
-    def __init__(self, adj_matrices: np.ndarray, device: str = 'cuda') -> None:
+    def __init__(self, adj_matrices: np.ndarray, device: str = 'cuda', model_type: str = 'multiplicative') -> None:
         """Initializes the BatchedMotif module.
 
         Args:
             adj_matrices: Array of adjacency matrices with shape (num_graphs, n, n).
             device: Device to run computations on ('cuda' or 'cpu').
+            model_type: Model type for ODE computation ('multiplicative' or 'additive').
+
+        Raises:
+            ValueError: If model_type is not 'multiplicative' or 'additive'.
         """
         super().__init__()
         self.device = get_device(device)
+        self.model_type = model_type
+        if model_type not in ['multiplicative', 'additive']:
+            raise ValueError("model_type must be 'multiplicative' or 'additive'")
         self.adj = torch.from_numpy(adj_matrices).to(dtype=torch.float32, device=self.device)
         self.n = adj_matrices.shape[-1]
         self.num_graphs = adj_matrices.shape[0]
@@ -369,10 +369,16 @@ class BatchedMotif(torch.nn.Module):
         factors = torch.where(act_mask, hill_act, factors)
         factors = torch.where(inh_mask, hill_inh, factors)
         prod_factors = torch.where(self.non_zero_mask, factors, 1.0)
-        prod = torch.prod(prod_factors, dim=3)
-        no_incoming = (~self.non_zero_mask.any(dim=3)).squeeze(0)
-        prod = torch.where(no_incoming.unsqueeze(0), 0.0, prod)
-        dx = prod - y
+        if self.model_type == 'multiplicative':
+            prod = torch.prod(prod_factors, dim=3)
+            no_incoming = (~self.non_zero_mask.any(dim=3)).squeeze(0)
+            prod = torch.where(no_incoming.unsqueeze(0), 0.0, prod)
+            dx = prod - y
+        else:  # additive
+            sum_factors = torch.sum(factors, dim=3)
+            no_incoming = (~self.non_zero_mask.any(dim=3)).squeeze(0)
+            sum_factors = torch.where(no_incoming.unsqueeze(0), 0.0, sum_factors)
+            dx = sum_factors - y
         return dx.view(batch_size, self.n)
 
 def solve_ivp_torchode(
@@ -383,19 +389,7 @@ def solve_ivp_torchode(
     atol: float = 1e-6,
     rtol: float = 1e-3
 ) -> torch.Tensor:
-    """Solves an initial value problem (IVP) for ODEs using torchode.
-
-    Args:
-        f: ODE function with signature f(t, y) -> dy/dt.
-        t_span: Tuple (t_start, t_end) for integration.
-        y0: Initial condition tensor (1D, 2D, or 3D).
-        t_eval: Time points for evaluation (optional).
-        atol: Absolute tolerance for solver.
-        rtol: Relative tolerance for solver.
-
-    Returns:
-        Solution tensor with shape depending on y0.
-    """
+    """Solves an initial value problem (IVP) for ODEs using torchode."""
     is_3d = y0.dim() == 3
     is_1d = y0.dim() == 1
     device = y0.device
@@ -433,7 +427,8 @@ def graph_features(
     batch_size: int = 100,
     device: str = 'cuda',
     include_mean_std: bool = True,
-    custom_features: list[Callable[[torch.Tensor], np.ndarray]] | None = None
+    custom_features: list[Callable[[torch.Tensor], np.ndarray]] | None = None,
+    model_type: str = 'multiplicative'
 ) -> np.ndarray:
     """Computes features for a batch of graphs by simulating dynamics.
 
@@ -446,6 +441,7 @@ def graph_features(
         custom_features: List of callable functions, each taking simulation output
             (shape: (num_inits, num_graphs, num_steps, n)) and returning features
             (shape: (num_graphs, k)). Features are appended to the default mean and std.
+        model_type: Model type for ODE computation ('multiplicative' or 'additive').
 
     Returns:
         Array of features with shape (num_graphs, 2*n + sum(k_i)), where 2*n is from
@@ -465,7 +461,7 @@ def graph_features(
         for i in range(0, num_graphs, batch_size):
             batch_adj = adj_matrices[i:i + batch_size]
             batch_size_actual = len(batch_adj)
-            model = BatchedMotif(batch_adj, device=device)
+            model = BatchedMotif(batch_adj, device=device, model_type=model_type)
             y0 = torch.rand(num_inits, batch_size_actual, n, device=device)
             ys = solve_ivp_torchode(model, Config.T_SPAN, y0)
             final = ys[:, :, -1, :]
@@ -494,7 +490,8 @@ def graph_features(
 def analyze_all_graphs(
     n: int,
     num_inits: int = 10,
-    custom_features: list[Callable[[torch.Tensor], np.ndarray]] | None = None
+    custom_features: list[Callable[[torch.Tensor], np.ndarray]] | None = None,
+    model_type: str = 'multiplicative'
 ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
     """Analyzes all unique graphs with n nodes and computes embeddings.
 
@@ -504,6 +501,7 @@ def analyze_all_graphs(
         custom_features: List of callable functions, each taking simulation output
             (shape: (num_inits, num_graphs, num_steps, n)) and returning features
             (shape: (num_graphs, k)). Features are appended to the default mean and std.
+        model_type: Model type for ODE computation ('multiplicative' or 'additive').
 
     Returns:
         A tuple containing:
@@ -516,7 +514,7 @@ def analyze_all_graphs(
     graphs = precompute_classes(n)
     print(f"Number of unique graphs for n={n}: {len(graphs)}")
     adj_matrices = np.array(graphs)
-    feats = graph_features(adj_matrices, num_inits, custom_features=custom_features)
+    feats = graph_features(adj_matrices, num_inits, custom_features=custom_features, model_type=model_type)
     pca = PCA(n_components=2)
     p2 = pca.fit_transform(feats)
     um = umap.UMAP(n_components=2)
@@ -527,7 +525,8 @@ def run_simulation(
     adj: np.ndarray | None,
     y0: torch.Tensor,
     ts: torch.Tensor,
-    device: str = 'cuda'
+    device: str = 'cuda',
+    model_type: str = 'multiplicative'
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """Runs a simulation for a single graph.
 
@@ -536,6 +535,7 @@ def run_simulation(
         y0: Initial condition tensor with shape (n,).
         ts: Time points for evaluation.
         device: Device to run computations on ('cuda' or 'cpu').
+        model_type: Model type for ODE computation ('multiplicative' or 'additive').
 
     Returns:
         A tuple of (time points, solution array) if adj is not None,
@@ -547,7 +547,7 @@ def run_simulation(
     adj = np.expand_dims(adj, 0)
     y0 = y0.to(dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
     t_eval = ts.to(device=device) if ts.dim() == 1 else torch.linspace(Config.T_SPAN[0], Config.T_SPAN[1], Config.NUM_STEPS, device=device)
-    ys = solve_ivp_torchode(BatchedMotif(adj, device=device), Config.T_SPAN, y0, t_eval=t_eval)
+    ys = solve_ivp_torchode(BatchedMotif(adj, device=device, model_type=model_type), Config.T_SPAN, y0, t_eval=t_eval)
     return t_eval.cpu().numpy(), ys.squeeze(0).squeeze(0).cpu().numpy()
 
 def draw_graph_edges(G: nx.DiGraph, n: int, pos: dict[int, tuple[float, float]]) -> list[dict]:
@@ -623,7 +623,8 @@ def visualize_graphs(
     graphs: list[np.ndarray],
     pca2: np.ndarray,
     max_points: int = 1500,
-    device: str = 'cuda'
+    device: str = 'cuda',
+    model_type: str = 'multiplicative'
 ) -> tuple[go.FigureWidget, widgets.VBox, widgets.Button, widgets.Button, list[widgets.FloatText]]:
     """Creates an interactive visualization of graphs and their embeddings.
 
@@ -632,6 +633,7 @@ def visualize_graphs(
         pca2: 2D PCA embedding of graph features.
         max_points: Maximum number of points to display in the PCA plot.
         device: Device to run computations on ('cuda' or 'cpu').
+        model_type: Model type for ODE computation ('multiplicative' or 'additive').
 
     Returns:
         A tuple containing:
@@ -673,7 +675,7 @@ def visualize_graphs(
         sampled_pca2 = pca2[initial_indices]
         initial_colors = [Config.COLORS['default']] * len(sampled_graphs)
 
-        fig = make_subplots(rows=1, cols=3, subplot_titles=("PCA embedding", "Selected graph", "Simulation"))
+        fig = make_subplots(rows=1, cols=4, subplot_titles=("PCA embedding", "Selected graph", "Simulation", "Sigmoid Output"))
         pca_scatter = go.Scatter(
             x=sampled_pca2[:, 0], y=sampled_pca2[:, 1],
             mode='markers',
@@ -698,8 +700,16 @@ def visualize_graphs(
                 line=dict(color=color_cycle[i])
             )
             fig.add_trace(sim_trace, row=1, col=3)
+        for i in range(n):
+            sigmoid_trace = go.Scatter(
+                x=[], y=[],
+                mode='lines',
+                name=f"σ(x{i})",
+                line=dict(color=color_cycle[i])
+            )
+            fig.add_trace(sigmoid_trace, row=1, col=4)
         fw = go.FigureWidget(fig)
-        fw.update_layout(height=Config.PLOT_HEIGHT, width=Config.PLOT_WIDTH)
+        fw.update_layout(height=Config.PLOT_HEIGHT, width=Config.PLOT_WIDTH + 300)
         fw._sampled_graphs = sampled_graphs
         fw._sampled_indices = initial_indices
 
@@ -730,10 +740,11 @@ def visualize_graphs(
                 fw.data[1].text = labels
                 fw.layout.shapes = shapes
                 fw.layout.annotations[1].text = f"Graph #{idx}"
-                for ti in range(2, 2 + n):
+                for ti in range(2, 2 + 2*n):
                     fw.data[ti].x = []
                     fw.data[ti].y = []
                 fw.layout.annotations[2].text = "Simulation"
+                fw.layout.annotations[3].text = "Sigmoid Output"
 
         fw.data[0].on_click(show_graph)
 
@@ -783,12 +794,16 @@ def visualize_graphs(
             y0_vals = [box.value for box in init_boxes]
             y0 = torch.tensor(y0_vals, dtype=torch.float32, device=device)
             ts = torch.linspace(Config.T_SPAN[0], Config.T_SPAN[1], Config.NUM_STEPS, device=device)
-            ts, arr = run_simulation(current_adj[0], y0, ts, device=device)
+            ts, arr = run_simulation(current_adj[0], y0, ts, device=device, model_type=model_type)
+            sigmoid_arr = arr**Config.N_HILL / (Config.K_EDGE**Config.N_HILL + arr**Config.N_HILL)
             with fw.batch_update():
                 for i in range(n):
                     fw.data[2 + i].x = ts
                     fw.data[2 + i].y = arr[:, i]
+                    fw.data[2 + n + i].x = ts
+                    fw.data[2 + n + i].y = sigmoid_arr[:, i]
                 fw.layout.annotations[2].text = "Simulation"
+                fw.layout.annotations[3].text = "Sigmoid Output"
         run_btn.on_click(on_run_clicked)
         controls = widgets.HBox([rand_btn, run_btn], layout=widgets.Layout(margin="10px"))
         ui = widgets.VBox([boxes_row, controls])

@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import time
 import itertools
-from graph_analysis import WeightedDigraph, get_canonical_form, run_simulation, graph_features, precompute_classes
+from graph_analysis import WeightedDigraph, get_canonical_form, run_simulation, graph_features, precompute_classes, visualize_graphs
 
 class TestGraphAnalysis(unittest.TestCase):
     def test_weighted_digraph_validation(self):
@@ -37,6 +37,16 @@ class TestGraphAnalysis(unittest.TestCase):
         self.assertEqual(arr.shape, (200, 2))  # 200 time steps, 2 nodes
         self.assertTrue(np.allclose(ts_out, ts.numpy()))
 
+    def test_simulation_additive(self):
+        """Test that run_simulation works with additive model."""
+        adj = np.array([[0, 1], [-1, 0]])
+        y0 = torch.tensor([0.5, 0.5])
+        ts = torch.linspace(0, 50, 200)
+        ts_out, arr = run_simulation(adj, y0, ts, model_type='additive')
+        self.assertEqual(arr.shape, (200, 2))  # 200 time steps, 2 nodes
+        self.assertTrue(np.allclose(ts_out, ts.numpy()))
+        self.assertFalse(np.any(np.isnan(arr)), "Additive model produced NaN values")
+
     def test_graph_features(self):
         """Test graph_features with and without custom features."""
         adj_matrices = np.array([[[0, 1], [-1, 0]], [[0, -1], [1, 0]]])
@@ -49,6 +59,16 @@ class TestGraphAnalysis(unittest.TestCase):
             return ys.max(dim=2)[0].mean(dim=0).cpu().numpy()
         feats_custom = graph_features(adj_matrices, num_inits=num_inits, batch_size=2, custom_features=[max_feature], device=device)
         self.assertEqual(feats_custom.shape, (2, 2 * n + n))
+
+    def test_graph_features_additive(self):
+        """Test graph_features with additive model."""
+        adj_matrices = np.array([[[0, 1], [-1, 0]], [[0, -1], [1, 0]]])
+        n = 2
+        num_inits = 2
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        feats = graph_features(adj_matrices, num_inits=num_inits, batch_size=2, device=device, model_type='additive')
+        self.assertEqual(feats.shape, (2, 2 * n))
+        self.assertFalse(np.any(np.isnan(feats)), "Additive model produced NaN values")
 
     def test_precompute_classes_connectivity(self):
         """Test that precompute_classes excludes disconnected graphs."""
