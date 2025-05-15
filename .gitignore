@@ -1,27 +1,28 @@
 # Python
-     __pycache__/
-     *.py[cod]
-     *.pyc
-     .pytest_cache/
-     *.egg-info/
-     dist/
-     build/
+__pycache__/
+*.py[cod]
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
 
-     # Virtual environments
-     venv/
-     env/
-     .env/
+# Virtual environments
+venv/
+env/
+.env/
 
-     # Jupyter
-     .ipynb_checkpoints/
+# Jupyter
+.ipynb_checkpoints/
 
-     # macOS
-     .DS_Store
+# macOS
+.DS_Store
 
-     # IDEs
-     .vscode/
-     .idea/
+# IDEs
+.vscode/
+.idea/
 
-     # Logs and caches
-     *.log
-     *.cache
+# Logs and caches
+*.log
+*.cache
+
