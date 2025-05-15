@@ -89,7 +89,7 @@ class WeightedDigraph:
         if n == 0 or matrix.shape[1] != n:
             return False
 
-        # 2) Check edge weights and self-loop constraint
+        # Check edge weights and self-loop constraint
         for i in range(n):
             for j in range(n):
                 if i == j:
@@ -99,14 +99,13 @@ class WeightedDigraph:
                     if matrix[i, j] not in (0, 1, -1):
                         return False
 
-        # 3) Check degree constraint: each node needs at least one incoming or outgoing edge
+        # Check degree constraint: each node needs at least one incoming or outgoing edge
         for i in range(n):
             has_edge = np.any(matrix[i, :] != 0) or np.any(matrix[:, i] != 0)
             if not has_edge:
                 return False
 
-        # 4) Check connectivity of the underlying undirected graph
-        #    (ignore loops, treat any non-zero directed arc as an undirected edge)
+        # Check connectivity of the underlying undirected graph
         adj = {i: set() for i in range(n)}
         for i in range(n):
             for j in range(n):
@@ -235,7 +234,6 @@ def identify_equivalence_class(digraph):
     """
     Identify the equivalence class of the digraph.
     Returns a canonical form (tuple) representing the isomorphism class.
-    Note: Does not assign a number without a precomputed mapping.
     """
     return get_canonical_form(digraph)
 
@@ -247,12 +245,6 @@ def precompute_classes(n: int) -> list[np.ndarray]:
 
     Returns:
         A list of numpy arrays, each an adjacency matrix of a unique graph.
-        Matrices satisfy WeightedDigraph constraints (valid weights and connectivity
-        in the underlying undirected graph) and are not verified during construction.
-
-    Notes:
-        Matrices are filtered for connectivity using a fast zero-row check followed
-        by BFS to exclude graphs with disconnected nodes or multiple components.
     """
     def is_valid_graph(matrix: np.ndarray) -> bool:
         """Checks if a matrix represents a connected graph.
@@ -346,7 +338,7 @@ class BatchedMotif(torch.nn.Module):
         """
         super().__init__()
         self.device = get_device(device)
-        self.adj = torch.tensor(adj_matrices, dtype=torch.float32).to(device=self.device)
+        self.adj = torch.from_numpy(adj_matrices).to(dtype=torch.float32, device=self.device)
         self.n = adj_matrices.shape[-1]
         self.num_graphs = adj_matrices.shape[0]
         self.loop_mask = torch.eye(self.n, dtype=torch.bool).expand_as(self.adj).to(device=self.device)
@@ -406,6 +398,7 @@ def solve_ivp_torchode(
     """
     is_3d = y0.dim() == 3
     is_1d = y0.dim() == 1
+    device = y0.device
     if is_3d:
         num_inits, num_graphs, n = y0.shape
         y0 = y0.view(num_inits * num_graphs, n)
@@ -414,7 +407,7 @@ def solve_ivp_torchode(
     else:
         y0 = y0.unsqueeze(1)
     if t_eval is None:
-        t_eval = torch.linspace(t_span[0], t_span[1], Config.NUM_STEPS, device=y0.device)
+        t_eval = torch.linspace(t_span[0], t_span[1], Config.NUM_STEPS, device=device)
     if t_eval.dim() == 1:
         t_eval = t_eval.unsqueeze(0).repeat(y0.shape[0], 1)
     term = to.ODETerm(f)
@@ -422,8 +415,8 @@ def solve_ivp_torchode(
     ctrl = to.IntegralController(atol=atol, rtol=rtol, term=term)
     solver = to.AutoDiffAdjoint(step, ctrl)
     batch_size = y0.shape[0]
-    t_start = torch.tensor([t_span[0]], dtype=torch.float32, device=y0.device).expand(batch_size)
-    t_end = torch.tensor([t_span[1]], dtype=torch.float32, device=y0.device).expand(batch_size)
+    t_start = torch.tensor([t_span[0]], dtype=torch.float32, device=device).expand(batch_size)
+    t_end = torch.tensor([t_span[1]], dtype=torch.float32, device=device).expand(batch_size)
     ivp = to.InitialValueProblem(y0=y0, t_start=t_start, t_end=t_end, t_eval=t_eval)
     sol = solver.solve(ivp)
     if is_3d:
@@ -473,7 +466,7 @@ def graph_features(
             batch_adj = adj_matrices[i:i + batch_size]
             batch_size_actual = len(batch_adj)
             model = BatchedMotif(batch_adj, device=device)
-            y0 = torch.rand(num_inits, batch_size_actual, n).to(device=device)
+            y0 = torch.rand(num_inits, batch_size_actual, n, device=device)
             ys = solve_ivp_torchode(model, Config.T_SPAN, y0)
             final = ys[:, :, -1, :]
             batch_features = []
@@ -488,11 +481,12 @@ def graph_features(
                     cf_result = cf(ys)
                     if not isinstance(cf_result, np.ndarray) or cf_result.shape[0] != batch_size_actual:
                         raise ValueError(f"Custom feature function {cf.__name__} returned invalid shape: {cf_result.shape}")
-                    batch_features.append(cf_result)
+                    batch_features.append(torch.from_numpy(cf_result).to(device=device))
                 except Exception as e:
                     logging.error(f"Error computing custom feature {cf.__name__}: {e}")
                     raise
-            batch_features = torch.cat([torch.tensor(f, device='cpu') if isinstance(f, np.ndarray) else f for f in batch_features], dim=1).cpu().numpy()
+            batch_features = [torch.from_numpy(f).to(device=device) if isinstance(f, np.ndarray) else f for f in batch_features]
+            batch_features = torch.cat(batch_features, dim=1).cpu().numpy()
             features.append(batch_features)
             pbar.update(1)
     return np.concatenate(features, axis=0)
@@ -551,7 +545,7 @@ def run_simulation(
     if adj is None:
         return None, None
     adj = np.expand_dims(adj, 0)
-    y0 = torch.tensor(y0, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+    y0 = y0.to(dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
     t_eval = ts.to(device=device) if ts.dim() == 1 else torch.linspace(Config.T_SPAN[0], Config.T_SPAN[1], Config.NUM_STEPS, device=device)
     ys = solve_ivp_torchode(BatchedMotif(adj, device=device), Config.T_SPAN, y0, t_eval=t_eval)
     return t_eval.cpu().numpy(), ys.squeeze(0).squeeze(0).cpu().numpy()
@@ -787,7 +781,7 @@ def visualize_graphs(
             if current_adj[0] is None:
                 return
             y0_vals = [box.value for box in init_boxes]
-            y0 = torch.tensor(y0_vals, dtype=torch.float32)
+            y0 = torch.tensor(y0_vals, dtype=torch.float32, device=device)
             ts = torch.linspace(Config.T_SPAN[0], Config.T_SPAN[1], Config.NUM_STEPS, device=device)
             ts, arr = run_simulation(current_adj[0], y0, ts, device=device)
             with fw.batch_update():

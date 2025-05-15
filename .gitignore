@@ -26,3 +26,4 @@ env/
 *.log
 *.cache
 
+__pycache__/graph_analysis.cpython-311.pyc
