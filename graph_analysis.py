@@ -247,9 +247,51 @@ def precompute_classes(n: int) -> list[np.ndarray]:
 
     Returns:
         A list of numpy arrays, each an adjacency matrix of a unique graph.
-        Matrices are guaranteed to satisfy WeightedDigraph constraints and are not
-        verified during construction.
+        Matrices satisfy WeightedDigraph constraints (valid weights and connectivity
+        in the underlying undirected graph) and are not verified during construction.
+
+    Notes:
+        Matrices are filtered for connectivity using a fast zero-row check followed
+        by BFS to exclude graphs with disconnected nodes or multiple components.
     """
+    def is_valid_graph(matrix: np.ndarray) -> bool:
+        """Checks if a matrix represents a connected graph.
+
+        Args:
+            matrix: Adjacency matrix to validate.
+
+        Returns:
+            True if the underlying undirected graph is connected, False otherwise.
+        """
+        n = matrix.shape[0]
+        # Fast check: A + A^T - 2I should have no zero rows
+        M = abs(matrix) + abs(matrix.T) - 2 * np.eye(n, dtype=int)
+        row_sums = np.sum(np.abs(M), axis=1)
+        if np.any(row_sums == 0):
+            logging.debug("Matrix skipped: node has no off-diagonal edges")
+            return False
+
+        # BFS to confirm full connectivity
+        adj = {i: set() for i in range(n)}
+        for i in range(n):
+            for j in range(n):
+                if i != j and (matrix[i, j] != 0 or matrix[j, i] != 0):
+                    adj[i].add(j)
+                    adj[j].add(i)
+        visited = set()
+        stack = [0]
+        while stack:
+            u = stack.pop()
+            if u not in visited:
+                visited.add(u)
+                for v in adj[u]:
+                    if v not in visited:
+                        stack.append(v)
+        if len(visited) != n:
+            logging.debug("Matrix skipped: graph has multiple components")
+            return False
+        return True
+
     edge_positions = [(i, j) for i in range(n) for j in range(n) if i != j]
     num_edges = len(edge_positions)
     loops = np.array(list(itertools.product([0, 1], repeat=n)))
@@ -265,13 +307,17 @@ def precompute_classes(n: int) -> list[np.ndarray]:
         matrices[:, i, j] = off_vals[off_idx, k]
     reps = {}
     for M in tqdm(matrices, total=total_matrices, desc=f"Processing matrices (n={n})"):
+        if not is_valid_graph(M):
+            continue
         try:
             G = WeightedDigraph(M, verify=False)
             canon = get_canonical_form(G)
             if canon not in reps:
                 reps[canon] = M
-        except ValueError:
+        except ValueError as e:
+            logging.warning(f"Unexpected error in WeightedDigraph construction: {e}")
             continue
+    logging.info(f"Found {len(reps)} unique graph representatives for n={n}")
     return list(reps.values())
 
 class BatchedMotif(torch.nn.Module):

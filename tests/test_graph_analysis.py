@@ -1,7 +1,9 @@
 import unittest
+import itertools
 import numpy as np
+import time
 import torch
-from graph_analysis import WeightedDigraph, get_canonical_form, run_simulation, precompute_classes, compute_node_invariants, visualize_graphs
+from graph_analysis import WeightedDigraph, get_canonical_form, run_simulation, precompute_classes, compute_node_invariants, visualize_graphs, graph_features
 
 class TestGraphAnalysis(unittest.TestCase):
     def test_weighted_digraph_validation(self):
@@ -73,6 +75,122 @@ class TestGraphAnalysis(unittest.TestCase):
             return ys.max(dim=2)[0].mean(dim=0).cpu().numpy()  # Max over time, mean over inits
         feats_custom = graph_features(adj_matrices, num_inits=num_inits, batch_size=2, custom_features=[max_feature])
         self.assertEqual(feats_custom.shape, (2, 2 * n + n))  # 2*n default + n custom
+    
+    def test_precompute_classes_connectivity(self):
+        """Test that precompute_classes excludes disconnected graphs."""
+        graphs = precompute_classes(2)
+        for M in graphs:
+            n = M.shape[0]
+            adj = {i: set() for i in range(n)}
+            for i in range(n):
+                for j in range(n):
+                    if i != j and (M[i, j] != 0 or M[j, i] != 0):
+                        adj[i].add(j)
+                        adj[j].add(i)
+            visited = set()
+            stack = [0]
+            while stack:
+                u = stack.pop()
+                if u not in visited:
+                    visited.add(u)
+                    for v in adj[u]:
+                        if v not in visited:
+                            stack.append(v)
+            self.assertEqual(len(visited), n, f"Graph is disconnected: {M}")
+
+    def test_precompute_classes_excludes_disconnected_self_loop(self):
+        """Test that precompute_classes excludes graphs with disconnected nodes having only self-loops."""
+        graphs = precompute_classes(2)
+        disconnected_matrix = np.array([[1, 0], [0, 0]])  # Node 0 has self-loop, disconnected
+        found = any(np.array_equal(M, disconnected_matrix) for M in graphs)
+        self.assertFalse(found, f"Disconnected matrix with self-loop found in graphs: {disconnected_matrix}")
+
+    def test_connectivity_check_performance(self):
+        """Benchmark BFS vs zero row check for connectivity."""
+        def bfs_check(matrix: np.ndarray) -> bool:
+            n = matrix.shape[0]
+            adj = {i: set() for i in range(n)}
+            for i in range(n):
+                for j in range(n):
+                    if i != j and (matrix[i, j] != 0 or matrix[j, i] != 0):
+                        adj[i].add(j)
+                        adj[j].add(i)
+            visited = set()
+            stack = [0]
+            while stack:
+                u = stack.pop()
+                if u not in visited:
+                    visited.add(u)
+                    for v in adj[u]:
+                        if v not in visited:
+                            stack.append(v)
+            return len(visited) == n
+
+        def zero_row_check(matrix: np.ndarray) -> bool:
+            n = matrix.shape[0]
+            M = matrix + matrix.T - 2 * np.eye(n, dtype=int)
+            row_sums = np.sum(np.abs(M), axis=1)
+            return not np.any(row_sums == 0)
+
+        def hybrid_check(matrix: np.ndarray) -> bool:
+            n = matrix.shape[0]
+            M = matrix + matrix.T - 2 * np.eye(n, dtype=int)
+            row_sums = np.sum(np.abs(M), axis=1)
+            if np.any(row_sums == 0):
+                return False
+            adj = {i: set() for i in range(n)}
+            for i in range(n):
+                for j in range(n):
+                    if i != j and (matrix[i, j] != 0 or matrix[j, i] != 0):
+                        adj[i].add(j)
+                        adj[j].add(i)
+            visited = set()
+            stack = [0]
+            while stack:
+                u = stack.pop()
+                if u not in visited:
+                    visited.add(u)
+                    for v in adj[u]:
+                        if v not in visited:
+                            stack.append(v)
+            return len(visited) == n
+
+        for n in [2, 3, 4]:
+            edge_positions = [(i, j) for i in range(n) for j in range(n) if i != j]
+            num_edges = len(edge_positions)
+            loops = np.array(list(itertools.product([0, 1], repeat=n)))
+            off_vals = np.array(list(itertools.product([-1, 0, 1], repeat=num_edges)))
+            num_loops, num_off = len(loops), len(off_vals)
+            total_matrices = num_loops * num_off
+            matrices = np.zeros((total_matrices, n, n), dtype=int)
+            loop_idx = np.repeat(np.arange(num_loops), num_off)
+            off_idx = np.tile(np.arange(num_off), num_loops)
+            for i in range(n):
+                matrices[:, i, i] = loops[loop_idx, i]
+            for k, (i, j) in enumerate(edge_positions):
+                matrices[:, i, j] = off_vals[off_idx, k]
+
+            # Benchmark BFS
+            start = time.perf_counter()
+            bfs_results = [bfs_check(M) for M in matrices]
+            bfs_time = time.perf_counter() - start
+
+            # Benchmark Zero Row
+            start = time.perf_counter()
+            zero_results = [zero_row_check(M) for M in matrices]
+            zero_time = time.perf_counter() - start
+
+            # Benchmark Hybrid
+            start = time.perf_counter()
+            hybrid_results = [hybrid_check(M) for M in matrices]
+            hybrid_time = time.perf_counter() - start
+
+            # Check correctness
+            discrepancies = sum(a != b for a, b in zip(bfs_results, zero_results))
+            self.assertTrue(discrepancies > 0, f"Zero row check should miss some disconnected graphs for n={n}")
+            self.assertEqual(bfs_results, hybrid_results, f"Hybrid check should match BFS for n={n}")
+
+            print(f"n={n}: BFS time={bfs_time:.4f}s, Zero row time={zero_time:.4f}s, Hybrid time={hybrid_time:.4f}s")
 
 if __name__ == '__main__':
     unittest.main()

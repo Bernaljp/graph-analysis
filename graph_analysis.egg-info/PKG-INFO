@@ -1,0 +1,20 @@
+Metadata-Version: 2.1
+Name: graph-analysis
+Version: 0.1.0
+Summary: A project for analyzing weighted directed graphs and visualizing dynamics
+Home-page: https://github.com/your-username/graph-analysis
+Author: Your Name
+Author-email: your.email@example.com
+License: MIT
+License-File: LICENSE
+Requires-Dist: torch>=2.0.0
+Requires-Dist: torchode>=0.2.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: scipy>=1.10.0
+Requires-Dist: scikit-learn>=1.2.0
+Requires-Dist: umap-learn>=0.5.3
+Requires-Dist: networkx>=3.0
+Requires-Dist: plotly>=5.14.0
+Requires-Dist: ipywidgets>=8.0.0
+Requires-Dist: tqdm>=4.65.0
+Requires-Dist: jupyter>=1.0.0
